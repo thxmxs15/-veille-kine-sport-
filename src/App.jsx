@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 
 // ─── SUPABASE CONFIG ─────────────────────────────────────────
 const SUPABASE_URL = "https://onuhahnabdbslgstcxws.supabase.co";
-const SUPABASE_KEY = "sb_publishable_HevHKJlFL-Uuq7HK40p1Qw_-LD1zgPN";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9udWhhaG5hYmRic2xnc3RjeHdzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDYzNjIsImV4cCI6MjA5MDIyMjM2Mn0.T4t4CQiyz-ggO6EZeF905lW2b-E9nw_S10X2zbtSObE";
 
 async function supaFetch(table, { select = "*", order, eq, limit } = {}) {
   let url = `${SUPABASE_URL}/rest/v1/${table}?select=${select}`;
