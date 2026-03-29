@@ -1,7 +1,7 @@
 """
-VeilleKiné — Collecte automatique d'articles PubMed
+VeilleKiné — Collecte automatique d'articles PubMed + figures PMC
 Se lance chaque jour via GitHub Actions.
-Cherche les nouveaux articles sur vos thèmes et les insère dans Supabase.
+Cherche les nouveaux articles, récupère les figures open access, insère dans Supabase.
 """
 
 import json
@@ -15,8 +15,8 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://onuhahnabdbslgstcxws.supa
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 PUBMED_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+PMC_OA_BASE = "https://www.ncbi.nlm.nih.gov/pmc/utils/oa.cgi"
 
-# Thèmes de recherche avec catégorie associée
 SEARCH_QUERIES = [
     {
         "query": "(hamstring injury OR hamstring strain) AND (sport OR athlete OR rugby OR football) AND (prevention OR rehabilitation OR return to sport)",
@@ -65,7 +65,6 @@ SEARCH_QUERIES = [
     },
 ]
 
-# Nombre de jours à remonter pour la recherche
 DAYS_BACK = 3
 MAX_ARTICLES_PER_QUERY = 3
 
@@ -74,7 +73,6 @@ def pubmed_search(query, days_back=3, max_results=3):
     """Recherche sur PubMed et retourne les IDs des articles."""
     date_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y/%m/%d")
     date_to = datetime.now().strftime("%Y/%m/%d")
-
     params = urllib.parse.urlencode({
         "db": "pubmed",
         "term": query,
@@ -85,7 +83,6 @@ def pubmed_search(query, days_back=3, max_results=3):
         "maxdate": date_to,
         "retmode": "json",
     })
-
     url = f"{PUBMED_BASE}/esearch.fcgi?{params}"
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
@@ -100,14 +97,12 @@ def pubmed_fetch_details(pmids):
     """Récupère les détails des articles par leurs IDs PubMed."""
     if not pmids:
         return []
-
     params = urllib.parse.urlencode({
         "db": "pubmed",
         "id": ",".join(pmids),
         "retmode": "xml",
         "rettype": "abstract",
     })
-
     url = f"{PUBMED_BASE}/efetch.fcgi?{params}"
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
@@ -118,23 +113,138 @@ def pubmed_fetch_details(pmids):
         return []
 
 
-def parse_pubmed_xml(xml_str):
-    """Parse le XML PubMed (simple, sans dépendance externe)."""
-    articles = []
-    # Split par article
-    parts = xml_str.split("<PubmedArticle>")
+def get_pmc_id(pmid):
+    """Convertit un PMID en PMC ID via l'API de conversion."""
+    url = f"https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/?ids={pmid}&format=json"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read())
+            records = data.get("records", [])
+            if records and records[0].get("pmcid"):
+                return records[0]["pmcid"]
+    except:
+        pass
+    return None
 
+
+def get_pmc_figure_url(pmcid):
+    """Récupère l'URL de la première figure d'un article PMC open access."""
+    if not pmcid:
+        return None
+
+    # Essayer de récupérer le XML de l'article PMC pour trouver les figures
+    url = f"{PUBMED_BASE}/efetch.fcgi?db=pmc&id={pmcid}&rettype=xml"
+    try:
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "VeilleKine/1.0")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            xml = resp.read().decode("utf-8")
+
+            # Chercher les balises <graphic> qui contiennent les figures
+            figure_urls = []
+
+            # Méthode 1: chercher xlink:href dans les balises graphic
+            search_str = xml
+            while 'xlink:href="' in search_str:
+                idx = search_str.find('xlink:href="')
+                if idx < 0:
+                    break
+                start = idx + 12
+                end = search_str.find('"', start)
+                href = search_str[start:end]
+
+                # Vérifier que c'est bien une figure (pas un tableau ou supplément)
+                context_start = max(0, idx - 500)
+                context = search_str[context_start:idx].lower()
+
+                if href and not href.startswith("http"):
+                    # Construire l'URL complète depuis PMC
+                    fig_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/bin/{href}"
+                    if any(ext in href.lower() for ext in [".jpg", ".jpeg", ".png", ".gif", ".tif"]):
+                        figure_urls.append(fig_url)
+                    else:
+                        # Essayer avec .jpg par défaut
+                        fig_url_jpg = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/figure/fig1/"
+                        figure_urls.append(fig_url_jpg)
+                elif href and href.startswith("http"):
+                    figure_urls.append(href)
+
+                search_str = search_str[end + 1:]
+
+            # Retourner la première figure pertinente
+            if figure_urls:
+                return figure_urls[0]
+
+            # Méthode 2: fallback - URL standard de la première figure PMC
+            # PMC a souvent une URL prévisible pour les figures
+            return f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/figure/fig1/"
+
+    except Exception as e:
+        print(f"    Erreur PMC figure: {e}")
+
+    return None
+
+
+def get_pmc_thumbnail(pmcid):
+    """Tente de récupérer une miniature depuis PMC via l'URL standard."""
+    if not pmcid:
+        return None
+    # PMC expose souvent une image de preview
+    # Format: https://www.ncbi.nlm.nih.gov/pmc/articles/PMCxxxxxxx/bin/figure_name.jpg
+    # Ou via l'API OA pour les articles open access
+    try:
+        oa_url = f"{PMC_OA_BASE}?id={pmcid}&format=json"
+        with urllib.request.urlopen(oa_url, timeout=10) as resp:
+            data = json.loads(resp.read())
+            records = data.get("records", [])
+            if records:
+                # L'article est open access - on peut accéder aux figures
+                return f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/figure/fig1/"
+    except:
+        pass
+    return None
+
+
+def find_article_image(pmid):
+    """Essaie de trouver une image pour l'article via PMC."""
+    print(f"    Recherche d'image pour PMID {pmid}...")
+
+    # Étape 1: Convertir PMID → PMC ID
+    pmcid = get_pmc_id(pmid)
+    if not pmcid:
+        print(f"    Pas de PMC ID (article probablement pas open access)")
+        return None
+
+    print(f"    PMC ID trouvé: {pmcid}")
+
+    # Étape 2: Vérifier si open access et récupérer la figure
+    thumbnail = get_pmc_thumbnail(pmcid)
+    if thumbnail:
+        print(f"    Image trouvée: {thumbnail[:60]}...")
+        return thumbnail
+
+    # Étape 3: Essayer d'extraire depuis le XML
+    fig_url = get_pmc_figure_url(pmcid)
+    if fig_url:
+        print(f"    Figure extraite: {fig_url[:60]}...")
+        return fig_url
+
+    print(f"    Aucune image trouvée")
+    return None
+
+
+def parse_pubmed_xml(xml_str):
+    """Parse le XML PubMed."""
+    articles = []
+    parts = xml_str.split("<PubmedArticle>")
     for part in parts[1:]:
         try:
             article = {}
-
-            # Title
             title_start = part.find("<ArticleTitle>")
             title_end = part.find("</ArticleTitle>")
             if title_start >= 0 and title_end >= 0:
                 article["title"] = clean_xml(part[title_start + 14:title_end])
 
-            # Abstract
             abs_start = part.find("<AbstractText>")
             abs_end = part.find("</AbstractText>")
             if abs_start >= 0 and abs_end >= 0:
@@ -142,7 +252,6 @@ def parse_pubmed_xml(xml_str):
             else:
                 article["abstract"] = ""
 
-            # Authors
             authors = []
             auth_section = part
             while "<LastName>" in auth_section:
@@ -150,7 +259,6 @@ def parse_pubmed_xml(xml_str):
                 ln_end = auth_section.find("</LastName>")
                 if ln_start >= 10 and ln_end >= 0:
                     last_name = clean_xml(auth_section[ln_start:ln_end])
-                    # Get initials
                     init_start = auth_section.find("<Initials>")
                     init_end = auth_section.find("</Initials>")
                     initials = ""
@@ -165,21 +273,16 @@ def parse_pubmed_xml(xml_str):
             else:
                 article["authors"] = ", ".join(authors)
 
-            # DOI
             doi = ""
             doi_marker = 'IdType="doi"'
             doi_pos = part.find(doi_marker)
             if doi_pos >= 0:
-                # Search backward for <ArticleId
-                search_area = part[max(0, doi_pos - 200):doi_pos + len(doi_marker)]
-                aid_start = search_area.rfind(">") + 1
                 doi_text_start = part.rfind(">", 0, doi_pos) + 1
                 doi_text_end = part.find("<", doi_text_start)
                 if doi_text_start > 0 and doi_text_end > doi_text_start:
                     doi = clean_xml(part[doi_text_start:doi_text_end]).strip()
             article["doi"] = doi
 
-            # Date
             date_str = ""
             year_start = part.find("<PubDate>")
             if year_start >= 0:
@@ -192,7 +295,6 @@ def parse_pubmed_xml(xml_str):
                 year = part[y_s + 6:y_e] if y_s >= 0 and y_e >= 0 else "2026"
                 month = part[m_s + 7:m_e] if m_s >= 0 and m_e >= 0 else "01"
                 day = part[d_s + 5:d_e] if d_s >= 0 and d_e >= 0 else "01"
-                # Convert month name to number if needed
                 month_map = {"Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
                              "May": "05", "Jun": "06", "Jul": "07", "Aug": "08",
                              "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12"}
@@ -200,7 +302,6 @@ def parse_pubmed_xml(xml_str):
                 date_str = f"{year}-{month}-{day.zfill(2)}"
             article["date"] = date_str or datetime.now().strftime("%Y-%m-%d")
 
-            # PMID
             pmid_start = part.find("<PMID")
             if pmid_start >= 0:
                 pmid_s = part.find(">", pmid_start) + 1
@@ -209,20 +310,16 @@ def parse_pubmed_xml(xml_str):
 
             if article.get("title"):
                 articles.append(article)
-
         except Exception as e:
             print(f"  Erreur parsing article: {e}")
             continue
-
     return articles
 
 
 def clean_xml(text):
-    """Nettoie le texte XML basique."""
+    """Nettoie le texte XML."""
     text = text.replace("&lt;", "<").replace("&gt;", ">")
-    text = text.replace("&amp;", "&").replace("&quot;", '"')
-    text = text.replace("&apos;", "'")
-    # Remove remaining XML tags
+    text = text.replace("&amp;", "&").replace("&quot;", '"').replace("&apos;", "'")
     result = ""
     in_tag = False
     for char in text:
@@ -236,46 +333,33 @@ def clean_xml(text):
 
 
 def check_existing_doi(doi):
-    """Vérifie si un article avec ce DOI existe déjà dans Supabase."""
     if not doi:
         return False
     url = f"{SUPABASE_URL}/rest/v1/articles?doi=eq.{urllib.parse.quote(doi)}&select=id"
-    req = urllib.request.Request(url, headers={
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-    })
+    req = urllib.request.Request(url, headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            return len(data) > 0
+            return len(json.loads(resp.read())) > 0
     except:
         return False
 
 
 def check_existing_title(title):
-    """Vérifie si un article avec ce titre existe déjà."""
     url = f"{SUPABASE_URL}/rest/v1/articles?title=eq.{urllib.parse.quote(title)}&select=id"
-    req = urllib.request.Request(url, headers={
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-    })
+    req = urllib.request.Request(url, headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            return len(data) > 0
+            return len(json.loads(resp.read())) > 0
     except:
         return False
 
 
 def insert_article(article_data):
-    """Insère un article dans Supabase."""
     url = f"{SUPABASE_URL}/rest/v1/articles"
     data = json.dumps(article_data).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST", headers={
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=minimal",
+        "apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json", "Prefer": "return=minimal",
     })
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -286,29 +370,28 @@ def insert_article(article_data):
 
 
 def generate_key_findings(abstract):
-    """Extrait les points clés basiques de l'abstract."""
     if not abstract or len(abstract) < 50:
         return []
-
     sentences = abstract.replace(". ", ".|").split("|")
     findings = []
-    keywords = ["significantly", "p<", "p =", "OR ", "RR ", "HR ", "CI ", "reduced",
-                 "increased", "compared", "associated", "effective", "improvement",
-                 "decrease", "higher", "lower", "risk", "effect", "outcome"]
-
+    keywords = ["significantly", "p<", "p =", "p=", "OR ", "RR ", "HR ", "CI ",
+                 "reduced", "increased", "compared", "associated", "effective",
+                 "improvement", "decrease", "higher", "lower", "risk", "effect",
+                 "outcome", "demonstrated", "revealed", "showed", "found",
+                 "correlation", "difference", "mean", "median", "ratio"]
     for s in sentences:
         s = s.strip()
         if len(s) > 30 and any(kw.lower() in s.lower() for kw in keywords):
             findings.append(s[:200])
         if len(findings) >= 4:
             break
-
     return findings if findings else [sentences[0][:200]] if sentences else []
 
 
 def main():
     print(f"=== VeilleKiné — Collecte du {datetime.now().strftime('%Y-%m-%d %H:%M')} ===")
-    print(f"Recherche sur les {DAYS_BACK} derniers jours\n")
+    print(f"Recherche sur les {DAYS_BACK} derniers jours")
+    print(f"Récupération des figures PMC activée\n")
 
     if not SUPABASE_KEY:
         print("ERREUR: SUPABASE_KEY non configurée")
@@ -316,12 +399,13 @@ def main():
 
     total_new = 0
     total_skipped = 0
+    total_with_image = 0
 
     for search in SEARCH_QUERIES:
         query = search["query"]
         category = search["category"]
         base_tags = search["tags"]
-        print(f"Recherche: {base_tags[0]}...")
+        print(f"\nRecherche: {base_tags[0]}...")
 
         pmids = pubmed_search(query, days_back=DAYS_BACK, max_results=MAX_ARTICLES_PER_QUERY)
         if not pmids:
@@ -332,7 +416,6 @@ def main():
         articles = pubmed_fetch_details(pmids)
 
         for art in articles:
-            # Vérifier doublons
             if art.get("doi") and check_existing_doi(art["doi"]):
                 print(f"  Doublon (DOI): {art['title'][:60]}...")
                 total_skipped += 1
@@ -342,8 +425,14 @@ def main():
                 total_skipped += 1
                 continue
 
-            # Préparer les données
             key_findings = generate_key_findings(art.get("abstract", ""))
+
+            # Chercher une image via PMC
+            image_url = None
+            if art.get("pmid"):
+                image_url = find_article_image(art["pmid"])
+                if image_url:
+                    total_with_image += 1
 
             article_data = {
                 "title": art["title"],
@@ -357,15 +446,20 @@ def main():
                 "doi": art.get("doi", ""),
                 "tags": json.dumps(base_tags),
                 "is_favorite": False,
+                "image_url": image_url,
             }
 
             if insert_article(article_data):
-                print(f"  + {art['title'][:60]}...")
+                img_status = " (avec image)" if image_url else ""
+                print(f"  + {art['title'][:55]}...{img_status}")
                 total_new += 1
             else:
                 print(f"  ERREUR: {art['title'][:60]}...")
 
-    print(f"\n=== Terminé: {total_new} nouveaux, {total_skipped} doublons ignorés ===")
+    print(f"\n=== Terminé ===")
+    print(f"  Nouveaux articles: {total_new}")
+    print(f"  Avec image PMC: {total_with_image}")
+    print(f"  Doublons ignorés: {total_skipped}")
 
 
 if __name__ == "__main__":
