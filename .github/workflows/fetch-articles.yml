@@ -1,0 +1,26 @@
+name: Collecte quotidienne VeilleKiné
+
+on:
+  schedule:
+    # Tous les jours à 7h00 (heure de Paris = 5h00 UTC en été, 6h00 UTC en hiver)
+    - cron: '0 5 * * *'
+  # Permet aussi de lancer manuellement depuis GitHub
+  workflow_dispatch:
+
+jobs:
+  fetch-articles:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Lancer la collecte d'articles
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python fetch_articles.py
