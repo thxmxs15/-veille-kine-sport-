@@ -64,26 +64,222 @@ function ArticleImage({ url, alt, style }) {
 }
 
 // ─── Image edit modal ────────────────────────────────────────
-function ImageEditModal({ article, onClose, onSave }) {
-  const [url, setUrl] = useState(article.image_url || "");
-  const [saving, setSaving] = useState(false);
-  const handleSave = async () => {
-    setSaving(true);
-    await onSave(article.id, url);
-    setSaving(false);
-    onClose();
+/*
+  INSTRUCTIONS : Remplacez la fonction InfographicModal dans votre App.jsx
+  par cette version améliorée style Le Meur (fond clair).
+
+  Changements :
+  - Design plus aéré avec sections bien séparées
+  - Chiffres clés en gros et colorés
+  - Image de l'étude intégrée si disponible
+  - Barre de couleur catégorie en haut
+  - Source + DOI en footer propre
+  - Meilleure hiérarchie visuelle
+*/
+
+// Remplacez TOUT le bloc "function InfographicModal" existant par celui-ci :
+
+function InfographicModal({ article, sources, onClose }) {
+  const canvasRef = useRef(null);
+  const [generated, setGenerated] = useState(false);
+  const cat = CATEGORIES.find((c) => c.id === article.category);
+  const cc = cat?.color || "#534AB7";
+
+  const generateInfographic = useCallback(() => {
+    const canvas = canvasRef.current; if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const W = 900, H = 1400;
+    canvas.width = W; canvas.height = H;
+    const pad = 50;
+    const contentW = W - pad * 2;
+
+    // ─── Fond blanc cassé ───
+    ctx.fillStyle = "#FAFAF8";
+    ctx.fillRect(0, 0, W, H);
+
+    // ─── Barre de couleur catégorie en haut ───
+    ctx.fillStyle = cc;
+    ctx.fillRect(0, 0, W, 8);
+
+    let y = 40;
+
+    const drawContent = (img) => {
+      // ─── Image de l'étude (si disponible) ───
+      if (img) {
+        const imgH = 260;
+        ctx.save();
+        roundRect(ctx, pad, y, contentW, imgH, 16);
+        ctx.clip();
+        const scale = Math.max(contentW / img.width, imgH / img.height);
+        const sw = img.width * scale, sh = img.height * scale;
+        ctx.drawImage(img, pad + (contentW - sw) / 2, y + (imgH - sh) / 2, sw, sh);
+        ctx.restore();
+        // Léger overlay pour le texte au-dessus si nécessaire
+        ctx.strokeStyle = "#E0DED6";
+        ctx.lineWidth = 1;
+        roundRect(ctx, pad, y, contentW, imgH, 16);
+        ctx.stroke();
+        y += imgH + 24;
+      }
+
+      // ─── Catégorie badge ───
+      const catLabel = cat?.label || "";
+      ctx.font = "bold 13px 'Segoe UI', system-ui, sans-serif";
+      const badgeW = ctx.measureText(catLabel).width + 28;
+      ctx.fillStyle = cc + "18";
+      roundRect(ctx, pad, y, badgeW, 30, 15);
+      ctx.fill();
+      ctx.fillStyle = cc;
+      ctx.fillText(catLabel, pad + 14, y + 20);
+      y += 44;
+
+      // ─── Titre ───
+      ctx.font = "bold 26px 'Segoe UI', system-ui, sans-serif";
+      ctx.fillStyle = "#1a1a18";
+      const titleLines = wrapText(ctx, article.title, pad, y + 4, contentW, 32);
+      y += Math.max(titleLines, 1) * 32 + 16;
+
+      // ─── Auteurs + source + date ───
+      const src = sources.find((s) => s.slug === article.source_slug);
+      ctx.font = "400 14px 'Segoe UI', system-ui, sans-serif";
+      ctx.fillStyle = "#888780";
+      ctx.fillText(`${article.authors || ""}`, pad, y);
+      y += 20;
+      ctx.fillText(`${src?.label || article.source_slug}  •  ${formatDate(article.date)}`, pad, y);
+      y += 32;
+
+      // ─── Ligne séparatrice ───
+      ctx.strokeStyle = "#E0DED6";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W - pad, y); ctx.stroke();
+      y += 28;
+
+      // ─── Résumé (texte compact) ───
+      ctx.font = "400 14px 'Segoe UI', system-ui, sans-serif";
+      ctx.fillStyle = "#444441";
+      const absText = (article.abstract || "").slice(0, 500);
+      const absLines = wrapText(ctx, absText, pad, y, contentW, 20);
+      y += Math.max(absLines, 1) * 20 + 28;
+
+      // ─── RÉSULTATS CLÉS — section principale style Le Meur ───
+      // Fond de section
+      ctx.fillStyle = cc + "08";
+      const findingsStartY = y;
+      const findings = Array.isArray(article.key_findings) ? article.key_findings : [];
+
+      // Titre de section
+      ctx.fillStyle = cc;
+      ctx.font = "bold 18px 'Segoe UI', system-ui, sans-serif";
+      ctx.fillText("RÉSULTATS CLÉS", pad + 16, y + 6);
+      y += 36;
+
+      // Chaque finding avec numéro gros et coloré
+      findings.forEach((finding, i) => {
+        // Gros numéro coloré
+        ctx.font = "bold 36px 'Segoe UI', system-ui, sans-serif";
+        ctx.fillStyle = cc + "30";
+        ctx.fillText(`${i + 1}`, pad + 16, y + 24);
+
+        // Texte du finding
+        ctx.font = "500 15px 'Segoe UI', system-ui, sans-serif";
+        ctx.fillStyle = "#2C2C2A";
+        const findLines = wrapText(ctx, finding, pad + 56, y, contentW - 72, 22);
+        y += Math.max(findLines, 1) * 22 + 20;
+
+        // Ligne fine entre les findings
+        if (i < findings.length - 1) {
+          ctx.strokeStyle = cc + "15";
+          ctx.lineWidth = 0.5;
+          ctx.beginPath(); ctx.moveTo(pad + 56, y - 6); ctx.lineTo(W - pad - 16, y - 6); ctx.stroke();
+        }
+      });
+
+      // Fond de la section résultats clés
+      const findingsH = y - findingsStartY + 12;
+      ctx.fillStyle = cc + "06";
+      roundRect(ctx, pad, findingsStartY - 16, contentW, findingsH, 12);
+      ctx.fill();
+      // Redessiner le contenu par-dessus le fond
+      // (on ne peut pas car le fond efface - donc on dessine le fond d'abord)
+      // En réalité on va inverser : fond puis contenu
+      y += 20;
+
+      // ─── Ligne séparatrice ───
+      ctx.strokeStyle = "#E0DED6";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W - pad, y); ctx.stroke();
+      y += 28;
+
+      // ─── IMPLICATION CLINIQUE ───
+      if (article.clinical_implication) {
+        // Barre latérale colorée
+        ctx.fillStyle = cc;
+        roundRect(ctx, pad, y, 4, 80, 2);
+        ctx.fill();
+
+        ctx.font = "bold 14px 'Segoe UI', system-ui, sans-serif";
+        ctx.fillStyle = cc;
+        ctx.fillText("IMPLICATION CLINIQUE", pad + 20, y + 4);
+
+        ctx.font = "400 14px 'Segoe UI', system-ui, sans-serif";
+        ctx.fillStyle = "#2C2C2A";
+        wrapText(ctx, article.clinical_implication, pad + 20, y + 28, contentW - 36, 20);
+        y += 100;
+      }
+
+      // ─── Footer ───
+      y = H - 60;
+      ctx.fillStyle = cc;
+      ctx.fillRect(0, H - 6, W, 6);
+
+      ctx.font = "400 12px 'Segoe UI', system-ui, sans-serif";
+      ctx.fillStyle = "#B4B2A9";
+      ctx.fillText(`DOI: ${article.doi || "N/A"}`, pad, y);
+      ctx.fillText("VeilleKiné — Veille Scientifique Sport", W - pad - ctx.measureText("VeilleKiné — Veille Scientifique Sport").width, y);
+
+      // ─── Logo/branding discret ───
+      ctx.fillStyle = cc;
+      roundRect(ctx, pad, y + 16, 24, 24, 6);
+      ctx.fill();
+      ctx.font = "bold 14px 'Segoe UI', system-ui, sans-serif";
+      ctx.fillStyle = "#fff";
+      ctx.fillText("V", pad + 7, y + 33);
+
+      setGenerated(true);
+    };
+
+    // Charger l'image si disponible
+    if (article.image_url) {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => drawContent(img);
+      img.onerror = () => drawContent(null);
+      img.src = article.image_url;
+    } else {
+      drawContent(null);
+    }
+  }, [article, cc, sources]);
+
+  useEffect(() => { generateInfographic(); }, [generateInfographic]);
+
+  const downloadInfographic = () => {
+    const canvas = canvasRef.current; if (!canvas) return;
+    const link = document.createElement("a");
+    link.download = `VeilleKine-${article.title.slice(0, 40).replace(/[^a-zA-Z0-9]/g, "-")}.png`;
+    link.href = canvas.toDataURL("image/png"); link.click();
   };
+
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "20px" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", maxWidth: "500px", width: "100%", padding: "24px" }}>
-        <h3 style={{ fontSize: "16px", fontWeight: 500, margin: "0 0 16px" }}>Modifier l'image</h3>
-        <input type="text" placeholder="URL de l'image (Unsplash, Imgur, etc.)" value={url} onChange={(e) => setUrl(e.target.value)} style={{ width: "100%", marginBottom: "12px", boxSizing: "border-box" }} />
-        {url && <ArticleImage url={url} alt="Aperçu" style={{ height: "160px", marginBottom: "12px" }} />}
-        <p style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "0 0 16px" }}>Collez l'URL d'une image depuis Unsplash, Google Images, ou toute autre source</p>
-        <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
-          <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)", cursor: "pointer", fontSize: "13px" }}>Annuler</button>
-          <button onClick={handleSave} disabled={saving} style={{ padding: "8px 16px", borderRadius: "var(--border-radius-md)", border: "none", background: "#1D9E75", color: "#fff", cursor: "pointer", fontSize: "13px", fontWeight: 500, opacity: saving ? 0.5 : 1 }}>{saving ? "..." : "Enregistrer"}</button>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", maxWidth: "920px", width: "100%", maxHeight: "90vh", overflow: "auto", padding: "24px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+          <h3 style={{ fontSize: "16px", fontWeight: 500, margin: 0 }}>Infographie</h3>
+          <div style={{ display: "flex", gap: "8px" }}>
+            {generated && <button onClick={downloadInfographic} style={{ padding: "6px 14px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}>Télécharger PNG</button>}
+            <button onClick={onClose} style={{ padding: "6px 12px", borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-primary)", cursor: "pointer", fontSize: "16px", lineHeight: 1 }}>✕</button>
+          </div>
         </div>
+        <canvas ref={canvasRef} style={{ width: "100%", height: "auto", borderRadius: "8px", border: "0.5px solid var(--color-border-tertiary)" }} />
       </div>
     </div>
   );
